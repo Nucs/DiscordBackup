@@ -134,9 +134,9 @@ namespace DiscordBackup {
                         }
 
                         if (toDb) {
-                            attachment.Content = bytes;
                             if (dbContext.Entry(attachment).State == EntityState.Detached)
                                 dbContext.Attach(attachment);
+                            attachment.Content = bytes;
                             dbContext.Attachments.Update(attachment);
                         }
                     }
