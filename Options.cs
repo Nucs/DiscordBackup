@@ -11,6 +11,8 @@ public class Options {
     public string RootOut { get; set; }
     public string GitRepository { get; set; }
     public GitCredentials GitCredentials { get; set; }
+    
+    public string LogPath { get; set; }
 }
 
 public class GitCredentials {

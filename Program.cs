@@ -17,47 +17,75 @@ using LibGit2Sharp;
 using LibGit2Sharp.Handlers;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Serilog;
+using Serilog.Core;
+using Serilog.Events;
 
 namespace DiscordBackup {
     class Program {
+        public static Logger _logger;
+        public static Options _options;
+        public static void Setup(string[] args) {
+            try {
+
+                Console.WriteLine("Discord Message Backup Tool\n\n");
+                Console.WriteLine($"Working Directory: {Path.GetFullPath("./")}");
+                var services = new ServiceCollection();
+
+                //load configuration
+                var config = new ConfigurationBuilder().AddJsonFile("appsettings.json", false, false)
+                                                       .Build();
+                _options = new Options();
+                config.Bind(_options);
+
+                Directory.CreateDirectory(_options.LogPath);
+                _logger = new LoggerConfiguration()
+                         .WriteTo.File(_options.LogPath + "/log.txt")
+                         .WriteTo.Console()
+                         .CreateLogger();
+            } catch (Exception e) {
+                Console.WriteLine(e);
+                throw;
+            }
+        }
+        
         public async Task MainAsync(string[] args) {
-            Console.WriteLine("Discord Message Backup Tool\n\n");
+            Setup(args);
+            _logger.Information("Discord Message Backup Tool");
+            _logger.Information($"Working Directory: {Path.GetFullPath("./")}");
             DiscordSocketClient socketClient = new DiscordSocketClient();
             if (args.Length != 1) {
-                Console.WriteLine("The number of arguments is incorrect.");
-                Console.WriteLine("Usage: DiscordBackup.exe <token>");
+                _logger.Information("The number of arguments is incorrect.");
+                _logger.Information("Usage: DiscordBackup.exe <token>");
                 return;
             }
 
-            //load configuration
-            var options = new Options();
-            new ConfigurationBuilder().AddJsonFile("appsettings.json", false, false)
-                                      .Build()
-                                      .Bind(options);
 
             //prepare connection
             TaskCompletionSource readyness = new TaskCompletionSource();
             socketClient.MessageUpdated += (cacheable, message, arg3) => { return Task.CompletedTask; };
             socketClient.Ready += () => {
-                Console.WriteLine("Bot is connected!");
+                _logger.Information("Bot is connected!");
                 readyness.TrySetResult();
                 return Task.CompletedTask;
             };
 
             //connect
-            Console.WriteLine($"Token: {new string('*', args[0].Length)}");
+            _logger.Information($"Token: {new string('*', args[0].Length)}");
             string token = args[0]; //Console.ReadLine();
             await socketClient.LoginAsync(TokenType.Bot, token);
             await socketClient.StartAsync();
             if (socketClient.LoginState != LoginState.LoggedIn) {
-                Console.WriteLine("Failed to log in.");
+                _logger.Information("Failed to log in.");
                 return;
             }
 
             await readyness.Task;
 
             //prepare database
-            MessageContext dbContext = new MessageContext(options.DatabasePath ?? "out/database.db");
+            MessageContext dbContext = new MessageContext(_options.DatabasePath ?? "out/database.db");
             await dbContext.Database.EnsureCreatedAsync();
 
             //iterate all servers and collect backup data
@@ -66,7 +94,7 @@ namespace DiscordBackup {
                 //var t = await (ch).GetMessageAsync(1071498800285368332);
 
                 foreach (SocketTextChannel channel in guild.Channels.Where(c => c.GetType() == typeof(SocketTextChannel))) {
-                    Console.WriteLine($"Backing up channel: {guild.Name}-#{channel.Name}");
+                    _logger.Information($"Backing up channel: {guild.Name}-#{channel.Name}");
                     List<IMessage> messages = await channel.GetMessagesAsync(100).Flatten().ToListAsync();
                     ;
                     do {
@@ -92,15 +120,15 @@ namespace DiscordBackup {
 
                 //save changes
                 var changed = dbContext.ChangeTracker.Entries().Count(c => c.State != EntityState.Unchanged);
-                Console.WriteLine($"Saving {changed} messages...");
+                _logger.Information($"Saving {changed} messages...");
                 await dbContext.SaveChangesAsync();
 
                 //handle attachments downloading
-                var saveToDisk = options.SaveAttachmentsToDisk;
-                var saveToDatabase = options.SaveAttachmentsToDatabase;
+                var saveToDisk = _options.SaveAttachmentsToDisk;
+                var saveToDatabase = _options.SaveAttachmentsToDatabase;
                 if (saveToDisk || saveToDatabase) {
                     //prepare folder
-                    var attachmentFolder = options.AttachmentsFolder ?? "attachments";
+                    var attachmentFolder = _options.AttachmentsFolder ?? "attachments";
                     Directory.CreateDirectory(attachmentFolder);
 
                     //gather undownloaded attachments
@@ -122,7 +150,7 @@ namespace DiscordBackup {
                     }
 
                     //download attachments
-                    Console.WriteLine($"Saving {pendingDownloadAttachments.Count} attachments...");
+                    _logger.Information($"Saving {pendingDownloadAttachments.Count} attachments...");
                     using var client = new System.Net.Http.HttpClient();
                     foreach ((bool toDisk, bool toDb, Attachment attachment) in pendingDownloadAttachments) {
                         var response = await client.GetAsync(attachment.Url);
@@ -145,35 +173,35 @@ namespace DiscordBackup {
                 }
             }
 
-            Console.WriteLine("Message backup finished.");
+            _logger.Information("Message backup finished.");
 
-            if (options.UseGit) {
+            if (_options.UseGit) {
                 try {
-                    Console.WriteLine("Backuping to git");
-                    options.RootOut = Path.GetFullPath(options.RootOut);
-                    Directory.CreateDirectory(options.RootOut);
+                    _logger.Information("Backuping to git");
+                    _options.RootOut = Path.GetFullPath(_options.RootOut);
+                    Directory.CreateDirectory(_options.RootOut);
 
                     Credentials credentials;
-                    if (options.GitCredentials != null) {
-                        credentials = new UsernamePasswordCredentials() { Username = options.GitCredentials.Username, Password = options.GitCredentials.Password };
+                    if (_options.GitCredentials != null) {
+                        credentials = new UsernamePasswordCredentials() { Username = _options.GitCredentials.Username, Password = _options.GitCredentials.Password };
                     } else {
                         credentials = new DefaultCredentials();
                     }
 
                     Repository repo;
                     try {
-                        repo = new LibGit2Sharp.Repository(Path.GetFullPath(options.RootOut));
+                        repo = new LibGit2Sharp.Repository(Path.GetFullPath(_options.RootOut));
                     } catch (RepositoryNotFoundException) {
                         Directory.CreateDirectory("./tmp");
                         try {
-                            Repository.Clone(options.GitRepository, Path.GetFullPath("./tmp"), new CloneOptions() {
+                            Repository.Clone(_options.GitRepository, Path.GetFullPath("./tmp"), new CloneOptions() {
                                 FetchOptions = new FetchOptions() { CredentialsProvider = delegate { return credentials; } },
                                 CredentialsProvider = new CredentialsHandler((url, url2, types) =>
                                                                                  credentials),
                                 CertificateCheck = delegate { return true; },
                             });
-                            Directory.Move("./tmp/.git", Path.Combine(options.RootOut, ".git"));
-                            repo = new LibGit2Sharp.Repository(Path.GetFullPath(options.RootOut));
+                            Directory.Move("./tmp/.git", Path.Combine(_options.RootOut, ".git"));
+                            repo = new LibGit2Sharp.Repository(Path.GetFullPath(_options.RootOut));
                         } finally {
                             Directory.Delete("./tmp", true);
                         }
@@ -181,7 +209,7 @@ namespace DiscordBackup {
 
                     var status = repo.RetrieveStatus();
                     if (status.IsDirty) {
-                        Console.WriteLine($"{status.Count()} Changes found, committing...");
+                        _logger.Information($"{status.Count()} Changes found, committing...");
 
                         //stage
                         foreach (var file in status) {
@@ -194,16 +222,16 @@ namespace DiscordBackup {
 
                         var author = new Signature("DiscordBackup", "discordbackup@localhost", DateTimeOffset.Now);
                         repo.Commit($"Backup {DateTime.UtcNow.ToString("s")}", author, author, new CommitOptions() { AllowEmptyCommit = true });
-                        Console.WriteLine("Changes committed.");
+                        _logger.Information("Changes committed.");
                     } else {
-                        Console.WriteLine("No changes found.");
+                        _logger.Information("No changes found.");
                     }
 
                     repo.Network.Push(repo.Head, new PushOptions() {
                         CredentialsProvider = delegate { return credentials; },
                     });
                 } catch (Exception e) {
-                    Console.WriteLine($"Unable to push to git\n{e}");
+                    _logger.Information($"Unable to push to git\n{e}");
                 }
             }
         }
