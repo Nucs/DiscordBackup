@@ -27,10 +27,10 @@ namespace DiscordBackup {
     class Program {
         public static Logger _logger;
         public static Options _options;
+
         public static void Setup(string[] args) {
             try {
-
-                Console.WriteLine("Discord Message Backup Tool\n\n");
+                Console.WriteLine("Discord Message Backup Tool");
                 Console.WriteLine($"Working Directory: {Path.GetFullPath("./")}");
                 var services = new ServiceCollection();
 
@@ -45,15 +45,14 @@ namespace DiscordBackup {
                          .WriteTo.File(_options.LogPath + "/log.txt")
                          .WriteTo.Console()
                          .CreateLogger();
+                _logger.Information("Discord Message Backup Tool");
             } catch (Exception e) {
                 Console.WriteLine(e);
                 throw;
             }
         }
-        
-        public async Task MainAsync(string[] args) {
-            Setup(args);
-            _logger.Information("Discord Message Backup Tool");
+
+        public static async Task Run(string[] args) {
             _logger.Information($"Working Directory: {Path.GetFullPath("./")}");
             DiscordSocketClient socketClient = new DiscordSocketClient();
             if (args.Length != 1) {
@@ -61,7 +60,6 @@ namespace DiscordBackup {
                 _logger.Information("Usage: DiscordBackup.exe <token>");
                 return;
             }
-
 
             //prepare connection
             TaskCompletionSource readyness = new TaskCompletionSource();
@@ -150,7 +148,8 @@ namespace DiscordBackup {
                     }
 
                     //download attachments
-                    _logger.Information($"Saving {pendingDownloadAttachments.Count} attachments...");
+                    int downloadedCount = 0, count = pendingDownloadAttachments.Count;
+                    _logger.Information($"Saving {count} attachments...");
                     using var client = new System.Net.Http.HttpClient();
                     foreach ((bool toDisk, bool toDb, Attachment attachment) in pendingDownloadAttachments) {
                         var response = await client.GetAsync(attachment.Url);
@@ -167,7 +166,13 @@ namespace DiscordBackup {
                             attachment.Content = bytes;
                             dbContext.Attachments.Update(attachment);
                         }
+
+                        if (downloadedCount++ % (Math.Max(count / 10, 1)) == 0)
+                            _logger.Information($"Downloaded {downloadedCount}/{count} attachments...");
                     }
+                    
+                    if (downloadedCount > 0)
+                        _logger.Information($"Downloaded {count} attachments...");
 
                     await dbContext.SaveChangesAsync();
                 }
@@ -231,17 +236,27 @@ namespace DiscordBackup {
                         CredentialsProvider = delegate { return credentials; },
                     });
                 } catch (Exception e) {
-                    _logger.Information($"Unable to push to git\n{e}");
+                    _logger.Error($"Unable to push to git\n{e}");
                 }
             }
         }
 
-        static void Main(string[] args) =>
-            new Program().MainAsync(args).GetAwaiter().GetResult();
-
-        public virtual EntityEntry<T>? AddIfNotExists<T>(DbSet<T> dbSet, T entity, Expression<Func<T, bool>> predicate = null) where T : class {
+        public static EntityEntry<T>? AddIfNotExists<T>(DbSet<T> dbSet, T entity, Expression<Func<T, bool>> predicate = null) where T : class {
             var exists = predicate != null ? dbSet.Any(predicate) : dbSet.Any();
             return !exists ? dbSet.Add(entity) : null;
+        }
+
+        static async Task<int> Main(string[] args) {
+            Setup(args);
+            try {
+                await Run(args);
+            } catch (Exception e) {
+                _logger?.Error(e.ToString());
+                Console.WriteLine(e);
+                return -1;
+            }
+
+            return 0;
         }
     }
 }
